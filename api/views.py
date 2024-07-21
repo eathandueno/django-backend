@@ -30,6 +30,37 @@ def chat_with_openai(request):
     return JsonResponse({"error": "Request must be POST"}, status=405)
 
 @csrf_exempt
+def simulate_conversation(request):
+    if request.method == "POST":
+        try:
+            data = json.loads(request.body)  # Parse JSON from the request body
+            user_input = data.get('message')
+            previous_message = data.get('previousMessage')  # Get the previous message
+            topic = data.get('topic')
+            if user_input:
+                # Create message history for the model
+                message_history = [
+                    {"role": "system", "content": "You are conversing about the topic: " + topic},
+                ]
+                if previous_message:
+                    message_history.append({"role": "user", "content": previous_message})
+                message_history.append({"role": "user", "content": user_input})
+
+                response = client.chat.completions.create(
+                    model=data.get('model'),
+                    max_tokens=data.get('maxTokens'),
+                    messages=message_history
+                )
+                
+                return JsonResponse({"response": response.choices[0].message.content})
+            else:
+                return JsonResponse({"error": "No message provided"}, status=400)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON format"}, status=400)
+
+    return JsonResponse({"error": "Request must be POST"}, status=405)
+
+@csrf_exempt
 def user_login(request):
     if request.method == "POST":
         try:
