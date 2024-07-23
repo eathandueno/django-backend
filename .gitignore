@@ -16,7 +16,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
-
+.env
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
