@@ -6,10 +6,48 @@ from decouple import config
 from django.views.decorators.csrf import csrf_exempt
 import json
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.chat_history import (
+    BaseChatMessageHistory,
+    InMemoryChatMessageHistory,
+)
+from langchain_core.runnables.history import RunnableWithMessageHistory
+import requests
+
+
+store = {}
+configuration = {"configurable":{"session_id":"testing_session"}}
+
 SECRET_KEY = config('OPENAI_API_KEY')
-model = ChatOpenAI(model="gpt-4", api_key=SECRET_KEY)
-client = OpenAI(api_key=SECRET_KEY)
+model = ChatOpenAI(model="gpt-4o", api_key=SECRET_KEY)
+client = ChatOpenAI(api_key=SECRET_KEY)
+parser = StrOutputParser()
+trimmer=trim_messages(
+    max_tokens=50,
+    strategy="last",
+    token_counter=model,
+    include_system=True,
+    allow_partial=True,
+    start_on="system",
+)
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if session_id not in store:
+        store[session_id] = InMemoryChatMessageHistory()
+    return store[session_id]
+
+def bing_search(query):
+    bing_key=config('BING_API_KEY')
+    endpoint = "https://api.bing.microsoft.com/v7.0/search"
+    headers = {"Ocp-Apim-Subscription-Key": bing_key}
+    params = {"q": query, "textDecorations": True, "textFormat": "HTML","mkt":"en-US","count":5}
+    response = requests.get(endpoint, headers=headers, params=params)
+    response.raise_for_status()
+    search_results = response.json()
+    print(search_results)
+    return search_results
 
 @csrf_exempt
 def chat_with_openai(request):
@@ -18,12 +56,21 @@ def chat_with_openai(request):
             data = json.loads(request.body)  # Parse JSON from the request body
             user_input = data.get('message')
             if user_input:
-                response = client.chat.completions.create(model="gpt-4",   # Specify the model you are using
-                messages=[
-                    {"role": "system", "content": "You are connected to a help assistant."},
-                    {"role": "user", "content": user_input},
+               
+                system_template = "You are a helpful assistant. You are assisting a user"
+
+                prompt_template= ChatPromptTemplate.from_messages([
+                    ("system", system_template),
+                    ("user", "{text}"),
                 ])
-                return JsonResponse({"response": response.choices[0].message.content})
+
+                chain = prompt_template | client | parser 
+                with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
+                response = with_history.invoke({"text": user_input})
+                # result = parser.invoke(response)
+                # bingSearch = bing_search(user_input)
+                # print(bingSearch)
+                return JsonResponse({"response": response})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
         except json.JSONDecodeError:
@@ -47,10 +94,11 @@ def simulate_conversation(request):
                 if previous_message:
                     messages.append(HumanMessage(content=previous_message))
                 messages.append(HumanMessage(content=user_input))
-
+                print(messages)
+                chain = client | parser  # Define the message chain
                 # Assuming `client` is already defined and initialized with your Langchain credentials
-                response = client.invoke(messages)
-
+                response = chain.invoke(messages)
+                
                 # The response handling here might need adjustment based on the actual response structure from Langchain
                 return JsonResponse({"response": response})
             else:
@@ -68,8 +116,8 @@ def user_login(request):
             username = data.get('username')
             password = data.get('password')
 
-            hardcoded_password = "demo_password_kangacook"
-            if username == "roulettech_demo_user" and password == hardcoded_password:
+            hardcoded_password = "demo_password"
+            if username == "demo_user" and password == hardcoded_password:
                 return JsonResponse({"message": "Login successful"})
             else:
                 return JsonResponse({"error": "Invalid credentials"}, status=401)
