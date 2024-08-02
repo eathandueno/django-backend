@@ -5,10 +5,12 @@ from openai import OpenAI
 from decouple import config
 from django.views.decorators.csrf import csrf_exempt
 import json
-import os
-
-SECRET_KEY = config('SECRET_KEY')
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+SECRET_KEY = config('OPENAI_API_KEY')
+model = ChatOpenAI(model="gpt-4", api_key=SECRET_KEY)
 client = OpenAI(api_key=SECRET_KEY)
+
 @csrf_exempt
 def chat_with_openai(request):
     if request.method == "POST":
@@ -39,20 +41,18 @@ def simulate_conversation(request):
             topic = data.get('topic')
             if user_input:
                 # Create message history for the model
-                message_history = [
-                    {"role": "system", "content": "You are conversing about the topic: " + topic},
+                messages = [
+                    SystemMessage(content="You are conversing about the topic: " + topic),
                 ]
                 if previous_message:
-                    message_history.append({"role": "user", "content": previous_message})
-                message_history.append({"role": "user", "content": user_input})
+                    messages.append(HumanMessage(content=previous_message))
+                messages.append(HumanMessage(content=user_input))
 
-                response = client.chat.completions.create(
-                    model=data.get('model'),
-                    max_tokens=data.get('maxTokens'),
-                    messages=message_history
-                )
-                
-                return JsonResponse({"response": response.choices[0].message.content})
+                # Assuming `client` is already defined and initialized with your Langchain credentials
+                response = client.invoke(messages)
+
+                # The response handling here might need adjustment based on the actual response structure from Langchain
+                return JsonResponse({"response": response})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
         except json.JSONDecodeError:
