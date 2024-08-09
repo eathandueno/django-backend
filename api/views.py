@@ -20,20 +20,28 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
+
 
 store = {}
 configuration = {"configurable":{"session_id":"testing_session"}}
 SECRET_KEY = config('OPENAI_API_KEY')
+hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
 model = ChatOpenAI(model="gpt-4o", api_key=SECRET_KEY)
 parser = StrOutputParser()
-trimmer=trim_messages(
-    max_tokens=50,
-    strategy="last",
-    token_counter=model,
-    include_system=True,
-    allow_partial=True,
-    start_on="system",
+
+
+
+llm = HuggingFacePipeline.from_model_id(
+    model_id="mistralai/Mistral-7B-Instruct-v0.2",
+    task="text-generation",
+    pipeline_kwargs=dict(
+        max_new_tokens=512,
+        do_sample=False,
+        repetition_penalty=1.03,
+    ),
 )
+chat_model = ChatHuggingFace(llm=llm)
 
 template = """Answer the following questions as best you can. You have access to the following tools:
 
@@ -242,12 +250,14 @@ def chat_with_openai(request):
                 # chain = prompt_template | model | parser 
                 # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
                 # response = with_history.invoke({"text": user_input})
-
+                open_source = chat_model.invoke(user_input)
+                print(f"line 254:    {open_source}")
                 response=agent_executor.invoke({"messages": HumanMessage(content=user_input)})
-                print(f"line 215:    {response}")
+                print(f"line 255:    {response}")
                 # print("_____________________Break________________________\n")
 
                 
+
                 last_message = response['messages'][-1].content
 
                 return JsonResponse({"response": last_message})
