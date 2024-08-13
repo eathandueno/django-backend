@@ -20,34 +20,49 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from langchain_huggingface import ChatHuggingFace, HuggingFacePipeline
+from transformers import pipeline, set_seed
+from langchain_huggingface import HuggingFacePipeline
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+from bs4 import BeautifulSoup
+hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
+model_id = "gpt2"
 
-
+llm = HuggingFaceEndpoint(
+    repo_id="facebook/blenderbot-400M-distill",
+    task="text-generation",
+    max_new_tokens=512,
+    do_sample=False,
+    repetition_penalty=1.03,
+)
+open_src = ChatHuggingFace(llm=llm, verbose=True)
 store = {}
 configuration = {"configurable":{"session_id":"testing_session"}}
 SECRET_KEY = config('OPENAI_API_KEY')
-hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
+
 model = ChatOpenAI(model="gpt-4o", api_key=SECRET_KEY)
 parser = StrOutputParser()
+print(type(model))
+# print(type(open_src))
+# print([attr for attr in dir(open_src) if not attr.startswith('__')])
+# print([attr for attr in dir(model) if not attr.startswith('__')])
 
 
-
-llm = HuggingFacePipeline.from_model_id(
-    model_id="mistralai/Mistral-7B-Instruct-v0.2",
-    task="text-generation",
-    pipeline_kwargs=dict(
-        max_new_tokens=512,
-        do_sample=False,
-        repetition_penalty=1.03,
-    ),
-)
-chat_model = ChatHuggingFace(llm=llm)
+controller_template = """You have access to the following tools
+                    Please use in order:
+                    1.  Initiator: This agent will help you initiate a research query.
+                    2.  Executor: This agent will help you execute a thorough research query.
+                    3.  Evaluator: This agent will help you evaluate the results of a research query.
+                    4.   RAG / Embed
+                    5.  Concluder: This agent will help you conclude a research query.
+                    
+                    to decipher and/or accomplish the following user query: {messages} """
 
 template = """Answer the following questions as best you can. You have access to the following tools:
 
 - Bing Search: Search Bing for information.
 - Arxiv Search: Search Arxiv for papers.
 - Get Time and Date: Retrieve the current date and time.
+- Scrape Website: Scrape a website for information.
 
 Use the following format:
 
@@ -55,7 +70,7 @@ Question: the input question you must answer
 
 Thought: you should always think about what to do
 
-Action: the action to take, should be one of [bing_search, arxiv_search, get_time_and_date]
+Action: the action to take, should be one of [bing_search, arxiv_search, get_time_and_date, scrape_website]
 
 Action Input: the input to the action
 
@@ -83,25 +98,24 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
     return store[session_id]
 
 @tool
-def bing_search(query, searchType = "WebPages", count = 1):
+def bing_search(query, searchType="WebPages", count=1):
     """
-    Search Bing and retrieve the top 3 results, presenting relevant snippets.
+    Search Bing and retrieve the top `count` results, presenting relevant snippets with citations.
 
     Args:
         query (str): The text query for which search results are desired.
-        searchType (str): The category of search results to be retrieved. This should be one of the following options:
-            - "WebPages": Retrieves standard web page search results.
-            - "Images": Retrieves image search results.
-            - "News": Retrieves news articles related to the query.
-            - "Videos": Retrieves video content related to the query.
-            - "Computations": Retrieves results that involve calculations or computations.
-            - "TimeZone": Retrieves information related to time zones.
-            - "Places": Retrieves geographical location results.
-            - "RelatedSearches": Retrieves queries related to the initial search term.
-
+        searchType (str): The category of search results to be retrieved.
+        count (int): Number of search results to retrieve.
+    
     Returns:
-        str: A string of the cleaned snippets of the defined number of search results.
+        str: A string of the cleaned snippets of the defined number of search results with citations.
     """
+    search_results = make_bing_request(query, searchType, count)
+    snippets_with_citations = extract_snippets_with_citations(search_results, searchType)
+
+    return format_snippets(snippets_with_citations)
+
+def make_bing_request(query, searchType, count):
     bing_key = config('BING_API_KEY')
     endpoint = "https://api.bing.microsoft.com/v7.0/search"
     headers = {"Ocp-Apim-Subscription-Key": bing_key}
@@ -116,30 +130,41 @@ def bing_search(query, searchType = "WebPages", count = 1):
     }
     response = requests.get(endpoint, headers=headers, params=params)
     response.raise_for_status()
-    search_results = response.json()
-    snippets = []
+    return response.json()
+
+def extract_snippets_with_citations(search_results, searchType):
+    snippets_with_citations = []
     if searchType.lower() == "webpages" and "webPages" in search_results:
         for result in search_results["webPages"]['value']:
-            clean_snippet = remove_html_tags(result['snippet'])
-            snippets.append(clean_snippet)
+            snippet = remove_html_tags(result['snippet'])
+            citation = result['url']
+            snippets_with_citations.append(f"{snippet} (Source: {citation})")
     elif searchType.lower() == "news" and "news" in search_results:
-        for article in search_results["news"]['value']:
-            clean_snippet = remove_html_tags(article['name'])
-            snippets.append(clean_snippet)
-    elif searchType.lower() == "images" and "images" in search_results:
-        for image in search_results["images"]['value']:
-            snippets.append(image['name'])
-    elif searchType.lower() == "videos" and "videos" in search_results:
-        for video in search_results["videos"]['value']:
-            snippets.append(video['name'])
-    elif searchType.lower() == "relatedsearches" and "relatedSearches" in search_results:
-        for related_search in search_results["relatedSearches"]['value']:
-            snippets.append(related_search['text'])
+        for tempArticle in search_results["news"]['value']:
+            article = extract_news_details(tempArticle)
+            snippet = remove_html_tags(article['title'])
+            citation = article['url']
+            snippets_with_citations.append(f"{snippet} (Source: {citation})")
+    # Additional search types can be handled similarly
     else:
-        snippets.append("No results found")
+        snippets_with_citations.append("No results found")
+    
+    return snippets_with_citations
 
-    return " \n ".join(snippets)
+def format_snippets(snippets_with_citations):
+    return " \n ".join(snippets_with_citations)
 
+def extract_news_details(json_data):
+    article_details = {
+        'title': json_data.get('name', '').replace('<b>', '').replace('</b>', ''),
+        'url': json_data.get('url', ''),
+        'description': json_data.get('description', ''),
+        'image_url': json_data.get('image', {}).get('contentUrl', ''),
+        'thumbnail_url': json_data.get('image', {}).get('thumbnail', {}).get('contentUrl', ''),
+        'date_published': json_data.get('datePublished', ''),
+        'provider': json_data.get('provider', [{}])[0].get('name', ''),
+    }
+    return article_details
 
 def remove_html_tags(text):
     clean_text = re.sub(r'<[^>]+>', '', text)  # This regex matches any text within <>, including the brackets
@@ -227,10 +252,46 @@ def extract_data(xml):
     
     return data_string
 
+@tool
+def scrape_website(url: str, elements: dict) -> str:
+    """
+    Scrapes the specified URL and extracts content based on the provided elements.
+    
+    Parameters:
+        url (str): The URL of the website to scrape.
+        elements (dict): A dictionary specifying the HTML elements to extract. 
+                         The keys are the names you want in the output string, 
+                         and the values are tuples with the HTML tag and class/id attributes.
 
-tools = [ bing_search,arxiv_search, get_time_and_date]
+
+    Returns:
+        str: A string formatted as JSON containing the scraped data.
+    """
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        scraped_data = {}
+
+        for key, (tag, attr) in elements.items():
+            element = soup.find(tag, attr)
+            if element:
+                scraped_data[key] = element.get_text(strip=True)
+            else:
+                scraped_data[key] = None
+        
+        return json.dumps(scraped_data, indent=4)
+    
+    except requests.exceptions.RequestException as e:
+        return f"Error occurred while scraping the website: {e}"
+
+
+agent_controller = create_react_agent(model,tools=[],state_modifier=controller_template)
+tools = [ bing_search,arxiv_search, get_time_and_date,scrape_website]
 
 agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
+
 
 
 @csrf_exempt
@@ -241,26 +302,39 @@ def chat_with_openai(request):
             user_input = data.get('message')
             if user_input:
                
+                # Create message history for the model
+                # messages = [
+                    
+                #     HumanMessage(content=user_input),
+                # ]
                 # system_template = "You are a helpful assistant. You are provided a set of tools to help you answer questions. You can search Arxiv or Bing for information. You can also chat with me."
-
+                
+                
                 # prompt_template= ChatPromptTemplate.from_messages([
                 #     ("system", system_template),
                 #     ("user", "{text}"),
                 # ])
-                # chain = prompt_template | model | parser 
+            
+                chat = [
+                    {"role": "user", "content": "Hello, how are you?"},
+                    {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
+                    {"role": "user", "content": user_input},
+]               
+                # chain = prompt_template | open_src | parser 
                 # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
                 # response = with_history.invoke({"text": user_input})
-                open_source = chat_model.invoke(user_input)
-                print(f"line 254:    {open_source}")
+                # open_response = open_src.invoke(input=chat)
                 response=agent_executor.invoke({"messages": HumanMessage(content=user_input)})
                 print(f"line 255:    {response}")
-                # print("_____________________Break________________________\n")
 
+                steps = []
+                for message in response['messages']:
+                    steps.append(message.content)
                 
 
                 last_message = response['messages'][-1].content
 
-                return JsonResponse({"response": last_message})
+                return JsonResponse({"response": last_message, "steps": steps})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
         except json.JSONDecodeError:
