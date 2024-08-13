@@ -253,16 +253,13 @@ def extract_data(xml):
     return data_string
 
 @tool
-def scrape_website(url: str, elements: dict) -> str:
+def scrape_website(url: str) -> str:
     """
-    Scrapes the specified URL and extracts content based on the provided elements.
-    
+    Scrapes the specified URL and extracts the main details such as title, 
+    meta description, and the main content.
+
     Parameters:
         url (str): The URL of the website to scrape.
-        elements (dict): A dictionary specifying the HTML elements to extract. 
-                         The keys are the names you want in the output string, 
-                         and the values are tuples with the HTML tag and class/id attributes.
-
 
     Returns:
         str: A string formatted as JSON containing the scraped data.
@@ -272,17 +269,32 @@ def scrape_website(url: str, elements: dict) -> str:
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        scraped_data = {}
-
-        for key, (tag, attr) in elements.items():
-            element = soup.find(tag, attr)
-            if element:
-                scraped_data[key] = element.get_text(strip=True)
-            else:
-                scraped_data[key] = None
+        # Extract the title
+        title = soup.title.string if soup.title else None
+        
+        # Extract the meta description
+        meta_description = None
+        meta_tag = soup.find('meta', attrs={'name': 'description'})
+        if meta_tag:
+            meta_description = meta_tag.get('content', None)
+        
+        # Extract the main content (this is a generic approach, and may vary depending on the site)
+        main_content = None
+        if soup.find('article'):
+            main_content = soup.find('article').get_text(strip=True)
+        elif soup.find('div', attrs={'id': 'main-content'}):
+            main_content = soup.find('div', attrs={'id': 'main-content'}).get_text(strip=True)
+        elif soup.body:
+            main_content = soup.body.get_text(strip=True)
+        
+        # Compile the scraped data
+        scraped_data = {
+            "title": title,
+            "meta_description": meta_description,
+            "main_content": main_content
+        }
         
         return json.dumps(scraped_data, indent=4)
-    
     except requests.exceptions.RequestException as e:
         return f"Error occurred while scraping the website: {e}"
 
