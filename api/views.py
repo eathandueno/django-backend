@@ -301,7 +301,9 @@ def scrape_website(url: str) -> str:
 
 agent_controller = create_react_agent(model,tools=[],state_modifier=controller_template)
 tools = [ bing_search,arxiv_search, get_time_and_date,scrape_website]
-
+from langgraph.checkpoint.memory import MemorySaver
+config = {"configurable": {"thread_id": "1"}}
+memory = MemorySaver()
 agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
 
 
@@ -326,7 +328,7 @@ def chat_with_openai(request):
                 #     ("system", system_template),
                 #     ("user", "{text}"),
                 # ])
-            
+                # user_input=template.format(messages=user_input)
                 chat = [
                     {"role": "user", "content": "Hello, how are you?"},
                     {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
@@ -336,11 +338,12 @@ def chat_with_openai(request):
                 # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
                 # response = with_history.invoke({"text": user_input})
                 # open_response = open_src.invoke(input=chat)
-                response=agent_executor.invoke({"messages": HumanMessage(content=user_input)})
-                print(f"line 255:    {response}")
+                response=agent_executor.invoke({"messages": HumanMessage(content=user_input)},config=config)
+                # print(f"line 255:    {response}")
 
                 steps = []
                 for message in response['messages']:
+                    print(f"line 258:    {message}")
                     steps.append(message.content)
                 
 
