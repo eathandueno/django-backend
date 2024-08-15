@@ -24,6 +24,8 @@ from transformers import pipeline, set_seed
 from langchain_huggingface import HuggingFacePipeline
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bs4 import BeautifulSoup
+from scholarly import scholarly
+
 hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
 model_id = "gpt2"
 
@@ -70,7 +72,7 @@ Question: the input question you must answer
 
 Thought: you should always think about what to do
 
-Action: the action to take, should be one of [bing_search, arxiv_search, get_time_and_date, scrape_website]
+Action: the action to take, should be one of [bing_search, search_google_scholar, arxiv_search, get_time_and_date, scrape_website]
 
 Action Input: the input to the action
 
@@ -253,6 +255,33 @@ def extract_data(xml):
     return data_string
 
 @tool
+def search_google_scholar(query):
+    """
+    Search Google Scholar for the specified query and retrieve the first result.
+
+    Args:
+        query (str): The query to search for on Google Scholar.
+
+    Returns:
+        str: A string containing the title, authors, year, abstract, and URL of the first result.
+    """
+    # Search for the query on Google Scholar
+    search_query = scholarly.search_pubs(query)
+    
+    # Retrieve the first result
+    result = next(search_query)
+    
+    # Prepare the output string
+    result_string = f"Title: {result['bib']['title']}\n" \
+                    f"Authors: {', '.join(result['bib']['author'])}\n" \
+                    f"Year: {result['bib']['pub_year']}\n" \
+                    f"Abstract: {result.get('abstract', 'No abstract available')}\n" \
+                    f"URL: {result.get('pub_url', 'No URL available')}"
+    
+    return result_string
+
+
+@tool
 def scrape_website(url: str) -> str:
     """
     Scrapes the specified URL and extracts the main details such as title, 
@@ -300,7 +329,7 @@ def scrape_website(url: str) -> str:
 
 
 agent_controller = create_react_agent(model,tools=[],state_modifier=controller_template)
-tools = [ bing_search,arxiv_search, get_time_and_date,scrape_website]
+tools = [ bing_search,search_google_scholar ,arxiv_search, get_time_and_date,scrape_website]
 
 agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
 
