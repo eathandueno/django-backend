@@ -10,6 +10,8 @@ import requests
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
+from langchain_core.messages.ai import AIMessage
+from langchain_core.messages.tool import ToolMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.chat_history import (
     BaseChatMessageHistory,
@@ -45,7 +47,7 @@ print(type(model))
 # print(type(open_src))
 # print([attr for attr in dir(open_src) if not attr.startswith('__')])
 # print([attr for attr in dir(model) if not attr.startswith('__')])
-
+bing_key = config('BING_API_KEY')
 
 controller_template = """You have access to the following tools
                     Please use in order:
@@ -98,7 +100,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
     return store[session_id]
 
 @tool
-def bing_search(query, searchType="WebPages", count=1):
+def bing_search(query="", searchType="WebPages", count=1):
     """
     Search Bing and retrieve the top `count` results, presenting relevant snippets with citations.
 
@@ -116,7 +118,7 @@ def bing_search(query, searchType="WebPages", count=1):
     return format_snippets(snippets_with_citations)
 
 def make_bing_request(query, searchType, count):
-    bing_key = config('BING_API_KEY')
+    
     endpoint = "https://api.bing.microsoft.com/v7.0/search"
     headers = {"Ocp-Apim-Subscription-Key": bing_key}
     params = {
@@ -299,8 +301,8 @@ def scrape_website(url: str) -> str:
         return f"Error occurred while scraping the website: {e}"
 
 
-agent_controller = create_react_agent(model,tools=[],state_modifier=controller_template)
 tools = [ bing_search,arxiv_search, get_time_and_date,scrape_website]
+agent_controller = create_react_agent(model,tools=tools,state_modifier=controller_template)
 from langgraph.checkpoint.memory import MemorySaver
 config = {"configurable": {"thread_id": "1"}}
 memory = MemorySaver()
@@ -316,19 +318,7 @@ def chat_with_openai(request):
             user_input = data.get('message')
             if user_input:
                
-                # Create message history for the model
-                # messages = [
-                    
-                #     HumanMessage(content=user_input),
-                # ]
-                # system_template = "You are a helpful assistant. You are provided a set of tools to help you answer questions. You can search Arxiv or Bing for information. You can also chat with me."
-                
-                
-                # prompt_template= ChatPromptTemplate.from_messages([
-                #     ("system", system_template),
-                #     ("user", "{text}"),
-                # ])
-                # user_input=template.format(messages=user_input)
+        
                 chat = [
                     {"role": "user", "content": "Hello, how are you?"},
                     {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
@@ -339,16 +329,20 @@ def chat_with_openai(request):
                 # response = with_history.invoke({"text": user_input})
                 # open_response = open_src.invoke(input=chat)
                 response=agent_executor.invoke({"messages": HumanMessage(content=user_input)},config=config)
-                # print(f"line 255:    {response}")
-
+                print(response['messages'][-1].content)
                 steps = []
                 for message in response['messages']:
-                    print(f"line 258:    {message}")
-                    steps.append(message.content)
+                    if isinstance(message, (AIMessage, ToolMessage)):
+                        steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
                 
 
                 last_message = response['messages'][-1].content
-
+                response_2 = agent_controller.invoke({"messages": AIMessage(content=last_message)})
+                print(response_2['messages'][-1].content)
+                for message in response_2['messages']:
+                    if isinstance(message, (AIMessage, ToolMessage)):
+                        steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
+                last_message = response_2['messages'][-1].content
                 return JsonResponse({"response": last_message, "steps": steps})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
