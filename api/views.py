@@ -49,15 +49,10 @@ print(type(model))
 # print([attr for attr in dir(model) if not attr.startswith('__')])
 bing_key = config('BING_API_KEY')
 
-controller_template = """You have access to the following tools
-                    Please use in order:
-                    1.  Initiator: This agent will help you initiate a research query.
-                    2.  Executor: This agent will help you execute a thorough research query.
-                    3.  Evaluator: This agent will help you evaluate the results of a research query.
-                    4.   RAG / Embed
-                    5.  Concluder: This agent will help you conclude a research query.
-                    
-                    to decipher and/or accomplish the following user query: {messages} """
+controller_template = """Verify if the task was completed: {messages} """
+
+questioner_template = """
+"""
 
 template = """Answer the following questions as best you can. You have access to the following tools:
 
@@ -65,6 +60,7 @@ template = """Answer the following questions as best you can. You have access to
 - Arxiv Search: Search Arxiv for papers.
 - Get Time and Date: Retrieve the current date and time.
 - Scrape Website: Scrape a website for information.
+
 
 Use the following format:
 
@@ -301,14 +297,17 @@ def scrape_website(url: str) -> str:
         return f"Error occurred while scraping the website: {e}"
 
 
+
+
+
 tools = [ bing_search,arxiv_search, get_time_and_date,scrape_website]
-agent_controller = create_react_agent(model,tools=tools,state_modifier=controller_template)
+question_tools = [get_time_and_date]
+
 from langgraph.checkpoint.memory import MemorySaver
 config = {"configurable": {"thread_id": "1"}}
 memory = MemorySaver()
 agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
-
-
+agent_questioner = create_react_agent(model,tools=question_tools,state_modifier=questioner_template)
 
 @csrf_exempt
 def chat_with_openai(request):
@@ -324,25 +323,36 @@ def chat_with_openai(request):
                     {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
                     {"role": "user", "content": user_input},
 ]               
+                steps = []
                 # chain = prompt_template | open_src | parser 
                 # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
                 # response = with_history.invoke({"text": user_input})
                 # open_response = open_src.invoke(input=chat)
-                response=agent_executor.invoke({"messages": HumanMessage(content=user_input)},config=config)
-                print(response['messages'][-1].content)
-                steps = []
+                task_provider = agent_questioner.invoke({"messages": """Create a list of tasks in sequential order and which tools to use based on the user query (if necessary use tools and results cooperatively), the next agent has access to these tools : Bing Search, Arxiv Search, Scrape Website and Get Current date and time .
+        USER: {user_input}  .\n
+        SYSTEM:
+        """.format(user_input=user_input)},config=config)
+                for message in task_provider['messages']:
+                    if isinstance(message, (AIMessage, ToolMessage)):
+                        
+                        steps.append(f"{getattr(message, 'tool_calls', f'{type(message)}')}    \n  -     {message.content}")
+                task_response = task_provider['messages'][-1].content
+                print(task_response)
+                response=agent_executor.invoke({"messages": HumanMessage(content=task_response)},config=config)
+            
                 for message in response['messages']:
                     if isinstance(message, (AIMessage, ToolMessage)):
-                        steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
+                        steps.append(f"{getattr(message, 'tool_calls', f'{type(message)}')}   \n  - -     {message.content}")
                 
-
                 last_message = response['messages'][-1].content
-                response_2 = agent_controller.invoke({"messages": AIMessage(content=last_message)})
-                print(response_2['messages'][-1].content)
-                for message in response_2['messages']:
-                    if isinstance(message, (AIMessage, ToolMessage)):
-                        steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
-                last_message = response_2['messages'][-1].content
+            
+                # agent_controller = create_react_agent(model,tools=tools,state_modifier=controller_template)
+                # response_2 = agent_controller.invoke({"messages": AIMessage(content=last_message)})
+                # print(response_2['messages'][-1].content)
+                # for message in response_2['messages']:
+                #     if isinstance(message, (AIMessage, ToolMessage)):
+                #         steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
+                # last_message = response_2['messages'][-1].content
                 return JsonResponse({"response": last_message, "steps": steps})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
