@@ -25,7 +25,10 @@ from langchain_huggingface import HuggingFacePipeline
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bs4 import BeautifulSoup
 from scholarly import scholarly
+from langgraph.checkpoint.memory import MemorySaver
+from langchain_community.tools import DuckDuckGoSearchRun
 
+search = DuckDuckGoSearchRun()
 hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
 model_id = "gpt2"
 
@@ -43,7 +46,7 @@ SECRET_KEY = config('OPENAI_API_KEY')
 
 model = ChatOpenAI(model="gpt-4o", api_key=SECRET_KEY)
 parser = StrOutputParser()
-print(type(model))
+
 # print(type(open_src))
 # print([attr for attr in dir(open_src) if not attr.startswith('__')])
 # print([attr for attr in dir(model) if not attr.startswith('__')])
@@ -65,6 +68,8 @@ template = """Answer the following questions as best you can. You have access to
 - Arxiv Search: Search Arxiv for papers.
 - Get Time and Date: Retrieve the current date and time.
 - Scrape Website: Scrape a website for information.
+- Search Google Scholar: Search Google Scholar for academic papers.
+- DuckDuckGo Search: Search DuckDuckGo for information.
 
 Use the following format:
 
@@ -72,7 +77,7 @@ Question: the input question you must answer
 
 Thought: you should always think about what to do
 
-Action: the action to take, should be one of [bing_search, search_google_scholar, arxiv_search, get_time_and_date, scrape_website]
+Action: the action to take, should be one of bing_search, search_google_scholar, arxiv_search, get_time_and_date, scrape_website, duckduckgo_search
 
 Action Input: the input to the action
 
@@ -91,6 +96,19 @@ Question: {messages}
 Thought:
 """
 
+@tool
+def duckduckgo_search(query: str) -> str:
+    """
+    Searches DuckDuckGo with the given query string.
+
+    Args:
+        query (str): The search query string.
+
+    Returns:
+        str: The result of the search.
+    """
+    result = search.invoke(query)
+    return result
 
 
 
@@ -99,7 +117,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
         store[session_id] = InMemoryChatMessageHistory()
     return store[session_id]
 
-@tool
+# @tool
 def bing_search(query, searchType="WebPages", count=1):
     """
     Search Bing and retrieve the top `count` results, presenting relevant snippets with citations.
@@ -113,9 +131,12 @@ def bing_search(query, searchType="WebPages", count=1):
         str: A string of the cleaned snippets of the defined number of search results with citations.
     """
     search_results = make_bing_request(query, searchType, count)
+    print(search_results)
     snippets_with_citations = extract_snippets_with_citations(search_results, searchType)
-
+    print(snippets_with_citations)
     return format_snippets(snippets_with_citations)
+
+
 
 def make_bing_request(query, searchType, count):
     bing_key = config('BING_API_KEY')
@@ -280,7 +301,7 @@ def search_google_scholar(query):
     
     return result_string
 
-
+bing_search("Python", "WebPages", 1)
 @tool
 def scrape_website(url: str) -> str:
     """
@@ -329,8 +350,10 @@ def scrape_website(url: str) -> str:
 
 
 agent_controller = create_react_agent(model,tools=[],state_modifier=controller_template)
-tools = [ bing_search,search_google_scholar ,arxiv_search, get_time_and_date,scrape_website]
+tools = [ bing_search,search_google_scholar,arxiv_search, get_time_and_date,scrape_website]
 
+config = {"configurable": {"thread_id": "1"}}
+memory = MemorySaver()
 agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
 
 
@@ -355,7 +378,7 @@ def chat_with_openai(request):
                 #     ("system", system_template),
                 #     ("user", "{text}"),
                 # ])
-            
+                # user_input=template.format(messages=user_input)
                 chat = [
                     {"role": "user", "content": "Hello, how are you?"},
                     {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
@@ -365,11 +388,12 @@ def chat_with_openai(request):
                 # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
                 # response = with_history.invoke({"text": user_input})
                 # open_response = open_src.invoke(input=chat)
-                response=agent_executor.invoke({"messages": HumanMessage(content=user_input)})
-                print(f"line 255:    {response}")
+                response=agent_executor.invoke({"messages": HumanMessage(content=user_input)},config=config)
+                # print(f"line 255:    {response}")
 
                 steps = []
                 for message in response['messages']:
+                    print(f"line 258:    {message}")
                     steps.append(message.content)
                 
 
