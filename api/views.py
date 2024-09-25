@@ -22,37 +22,24 @@ from langgraph.prebuilt import create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from transformers import pipeline, set_seed
-from langchain_huggingface import HuggingFacePipeline
-from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from bs4 import BeautifulSoup
 from scholarly import scholarly
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_community.tools import DuckDuckGoSearchRun
-
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain.chains import create_retrieval_chain
+from transformers import pipeline
 search = DuckDuckGoSearchRun()
 hugging_face = config('HUGGINGFACEHUB_API_TOKEN')
-model_id = "gpt2"
-
-llm = HuggingFaceEndpoint(
-    repo_id="facebook/blenderbot-400M-distill",
-    task="text-generation",
-    max_new_tokens=512,
-    do_sample=False,
-    repetition_penalty=1.03,
-)
-open_src = ChatHuggingFace(llm=llm, verbose=True)
 store = {}
 configuration = {"configurable":{"session_id":"testing_session"}}
 SECRET_KEY = config('OPENAI_API_KEY')
+bing_key = config('BING_API_KEY')
 
 model = ChatOpenAI(model="gpt-4o", api_key=SECRET_KEY)
 parser = StrOutputParser()
-
-# print(type(open_src))
-# print([attr for attr in dir(open_src) if not attr.startswith('__')])
-# print([attr for attr in dir(model) if not attr.startswith('__')])
-bing_key = config('BING_API_KEY')
 
 controller_template = """Verify if the task was completed: {messages} """
 
@@ -93,19 +80,6 @@ Question: {messages}
 Thought:
 """
 
-@tool
-def duckduckgo_search(query: str) -> str:
-    """
-    Searches DuckDuckGo with the given query string.
-
-    Args:
-        query (str): The search query string.
-
-    Returns:
-        str: The result of the search.
-    """
-    result = search.invoke(query)
-    return result
 
 
 
@@ -128,12 +102,9 @@ def bing_search(query="", searchType="WebPages", count=1):
         str: A string of the cleaned snippets of the defined number of search results with citations.
     """
     search_results = make_bing_request(query, searchType, count)
-    print(search_results)
     snippets_with_citations = extract_snippets_with_citations(search_results, searchType)
-    print(snippets_with_citations)
+    
     return format_snippets(snippets_with_citations)
-
-
 
 def make_bing_request(query, searchType, count):
     
@@ -189,6 +160,92 @@ def extract_news_details(json_data):
 def remove_html_tags(text):
     clean_text = re.sub(r'<[^>]+>', '', text)  # This regex matches any text within <>, including the brackets
     return clean_text
+
+@tool
+def duckduckgo_search(query: str) -> str:
+    """
+    Searches DuckDuckGo with the given query string.
+
+    Args:
+        query (str): The search query string.
+
+    Returns:
+        str: The result of the search.
+    """
+    result = search.invoke(query)
+    return result
+
+@tool
+def search_google_scholar(query):
+    """
+    Search Google Scholar for the specified query and retrieve the first result.
+
+    Args:
+        query (str): The query to search for on Google Scholar.
+
+    Returns:
+        str: A string containing the title, authors, year, abstract, and URL of the first result.
+    """
+    # Search for the query on Google Scholar
+    search_query = scholarly.search_pubs(query)
+    
+    # Retrieve the first result
+    result = next(search_query)
+    
+    # Prepare the output string
+    result_string = f"Title: {result['bib']['title']}\n" \
+                    f"Authors: {', '.join(result['bib']['author'])}\n" \
+                    f"Year: {result['bib']['pub_year']}\n" \
+                    f"Abstract: {result.get('abstract', 'No abstract available')}\n" \
+                    f"URL: {result.get('pub_url', 'No URL available')}"
+    
+    return result_string
+
+@tool
+def scrape_website(url: str) -> str:
+    """
+    Scrapes the specified URL and extracts the main details such as title, 
+    meta description, and the main content.
+
+    Parameters:
+        url (str): The URL of the website to scrape.
+
+    Returns:
+        str: A string formatted as JSON containing the scraped data.
+    """
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Extract the title
+        title = soup.title.string if soup.title else None
+        
+        # Extract the meta description
+        meta_description = None
+        meta_tag = soup.find('meta', attrs={'name': 'description'})
+        if meta_tag:
+            meta_description = meta_tag.get('content', None)
+        
+        # Extract the main content (this is a generic approach, and may vary depending on the site)
+        main_content = None
+        if soup.find('article'):
+            main_content = soup.find('article').get_text(strip=True)
+        elif soup.find('div', attrs={'id': 'main-content'}):
+            main_content = soup.find('div', attrs={'id': 'main-content'}).get_text(strip=True)
+        elif soup.body:
+            main_content = soup.body.get_text(strip=True)
+        
+        # Compile the scraped data
+        scraped_data = {
+            "title": title,
+            "meta_description": meta_description,
+            "main_content": main_content
+        }
+        
+        return json.dumps(scraped_data, indent=4)
+    except requests.exceptions.RequestException as e:
+        return f"Error occurred while scraping the website: {e}"
 
 @tool
 def get_time_and_date():
@@ -272,136 +329,50 @@ def extract_data(xml):
     
     return data_string
 
-@tool
-def search_google_scholar(query):
-    """
-    Search Google Scholar for the specified query and retrieve the first result.
 
-    Args:
-        query (str): The query to search for on Google Scholar.
-
-    Returns:
-        str: A string containing the title, authors, year, abstract, and URL of the first result.
-    """
-    # Search for the query on Google Scholar
-    search_query = scholarly.search_pubs(query)
-    
-    # Retrieve the first result
-    result = next(search_query)
-    
-    # Prepare the output string
-    result_string = f"Title: {result['bib']['title']}\n" \
-                    f"Authors: {', '.join(result['bib']['author'])}\n" \
-                    f"Year: {result['bib']['pub_year']}\n" \
-                    f"Abstract: {result.get('abstract', 'No abstract available')}\n" \
-                    f"URL: {result.get('pub_url', 'No URL available')}"
-    
-    return result_string
-
-bing_search("Python", "WebPages", 1)
-@tool
-def scrape_website(url: str) -> str:
-    """
-    Scrapes the specified URL and extracts the main details such as title, 
-    meta description, and the main content.
-
-    Parameters:
-        url (str): The URL of the website to scrape.
-
-    Returns:
-        str: A string formatted as JSON containing the scraped data.
-    """
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Extract the title
-        title = soup.title.string if soup.title else None
-        
-        # Extract the meta description
-        meta_description = None
-        meta_tag = soup.find('meta', attrs={'name': 'description'})
-        if meta_tag:
-            meta_description = meta_tag.get('content', None)
-        
-        # Extract the main content (this is a generic approach, and may vary depending on the site)
-        main_content = None
-        if soup.find('article'):
-            main_content = soup.find('article').get_text(strip=True)
-        elif soup.find('div', attrs={'id': 'main-content'}):
-            main_content = soup.find('div', attrs={'id': 'main-content'}).get_text(strip=True)
-        elif soup.body:
-            main_content = soup.body.get_text(strip=True)
-        
-        # Compile the scraped data
-        scraped_data = {
-            "title": title,
-            "meta_description": meta_description,
-            "main_content": main_content
-        }
-        
-        return json.dumps(scraped_data, indent=4)
-    except requests.exceptions.RequestException as e:
-        return f"Error occurred while scraping the website: {e}"
-
-
-
-
-
-tools = [ bing_search,search_google_scholar,arxiv_search, get_time_and_date,scrape_website]
-question_tools = [get_time_and_date]
+tools = [get_time_and_date, bing_search, search_google_scholar, arxiv_search, get_time_and_date, scrape_website, duckduckgo_search]
+question_tools = [get_time_and_date, bing_search, search_google_scholar, arxiv_search, get_time_and_date, scrape_website, duckduckgo_search]
 
 
 config = {"configurable": {"thread_id": "1"}}
 memory = MemorySaver()
-agent_executor = create_react_agent(model,tools=tools,state_modifier=template)
-agent_questioner = create_react_agent(model,tools=question_tools,state_modifier=questioner_template)
 
+agent_questioner = create_react_agent(model,tools=question_tools,state_modifier=questioner_template,checkpointer=memory)
+task=pipeline(model="google/flan-t5-xl")
 @csrf_exempt
 def chat_with_openai(request):
     if request.method == "POST":
         try:
             data = json.loads(request.body)  # Parse JSON from the request body
             user_input = data.get('message')
-            if user_input:
-               
-        
-                chat = [
-                    {"role": "user", "content": "Hello, how are you?"},
-                    {"role": "assistant", "content": "I'm doing great. How can I help you today?"},
-                    {"role": "user", "content": user_input},
-]               
+            if user_input:           
                 steps = []
-                # chain = prompt_template | open_src | parser 
-                # with_history = RunnableWithMessageHistory(chain,get_session_history,config=configuration)
-                # response = with_history.invoke({"text": user_input})
-                # open_response = open_src.invoke(input=chat)
-                task_provider = agent_questioner.invoke({"messages": """Create a list of tasks in sequential order and which tools to use based on the user query (if necessary use tools and results cooperatively), the next agent has access to these tools : Bing Search, Arxiv Search, Scrape Website and Get Current date and time .
-        USER: {user_input}  .\n
-        SYSTEM:
-        """.format(user_input=user_input)},config=config)
+                chain =   model | parser 
+               
+                # response=task(f"Answer the following user query: {user_input}")
+                # print(response[0]['generated_text'])
+                task_provider = agent_questioner.invoke({"messages": """Answer the following questions as best you can. You have access to the following tools:
+                Bing Search, Arxiv Search, Scrape Website and Get Current date and time, Google Scholar Search, DuckDuckGo Search
+                Use the following format:
+                Question: the input question you must answer
+                Thought: you should always think about what to do
+                Action: the action to take, should be one of Bing Search, Arxiv Search, Scrape Website and Get Current date and time, Google Scholar Search, DuckDuckGo Search
+                Action Input: the input to the action
+                Observation: the result of the action
+
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question in JSON format
+Begin!
+                QUESTION: {user_input}  .\n
+                SYSTEM:
+                """.format(user_input=user_input)},config=config)
+                task_response = task_provider
                 for message in task_provider['messages']:
-                    if isinstance(message, (AIMessage, ToolMessage)):
-                        
-                        steps.append(f"{getattr(message, 'tool_calls', f'{type(message)}')}    \n  -     {message.content}")
-                task_response = task_provider['messages'][-1].content
-                print(task_response)
-                response=agent_executor.invoke({"messages": HumanMessage(content=task_response)},config=config)
-            
-                for message in response['messages']:
-                    if isinstance(message, (AIMessage, ToolMessage)):
-                        steps.append(f"{getattr(message, 'tool_calls', f'{type(message)}')}   \n  - -     {message.content}")
-                
-                last_message = response['messages'][-1].content
-            
-                # agent_controller = create_react_agent(model,tools=tools,state_modifier=controller_template)
-                # response_2 = agent_controller.invoke({"messages": AIMessage(content=last_message)})
-                # print(response_2['messages'][-1].content)
-                # for message in response_2['messages']:
-                #     if isinstance(message, (AIMessage, ToolMessage)):
-                #         steps.append(f"{getattr(message, 'tool_calls', 'AI')}    ________     {message.content}")
-                # last_message = response_2['messages'][-1].content
+                    steps.append(f"{getattr(message, 'tool_calls', f'{type(message)}')}   \n  -     {message.content}")
+                last_message = task_response['messages'][-1].content
+                # print(last_message)
+                # summary = chain.invoke(f"Please format the following into structure output: {last_message}")
                 return JsonResponse({"response": last_message, "steps": steps})
             else:
                 return JsonResponse({"error": "No message provided"}, status=400)
